@@ -65,6 +65,20 @@ public abstract class OutputDevice extends AbstractBehavior<OutputDevice.Command
   private double offsetPhase2 = 0;
   private PowerData powerPhase2 = new PowerData(0, 0, 0, 0, 230.0, 50.0);
 
+  // Store last adjusted power values (after offset and smoothing) for next smoothing calculation
+  private double lastAdjustedPowerPhase0 = 0;
+  private double lastAdjustedPowerPhase1 = 0;
+  private double lastAdjustedPowerPhase2 = 0;
+
+  // Power averaging time periods in seconds (separate for increasing and decreasing power)
+  // Time constant for exponential smoothing: larger values = more smoothing
+  private double powerAveragingSecondsPhase0Up = 0;
+  private double powerAveragingSecondsPhase0Down = 0;
+  private double powerAveragingSecondsPhase1Up = 0;
+  private double powerAveragingSecondsPhase1Down = 0;
+  private double powerAveragingSecondsPhase2Up = 0;
+  private double powerAveragingSecondsPhase2Down = 0;
+
   private Instant lastEnergyPhase0Update = Instant.now();
   private EnergyData energyPhase0 = new EnergyData(0, 0);
   private Instant lastEnergyPhase1Update = Instant.now();
@@ -88,6 +102,7 @@ public abstract class OutputDevice extends AbstractBehavior<OutputDevice.Command
     this.usageConstraintInitDuration = config.getDuration("usage-constraint-init-duration");
     
     initPowerOffsets(config);
+    initPowerAveragingTimes(config);
 
     if (config.hasPath("client-contexts")) {
       clientContextsInitializer.initClientContexts(
@@ -406,8 +421,22 @@ public abstract class OutputDevice extends AbstractBehavior<OutputDevice.Command
   }
   
   protected void setPowerPhase0(@NotNull PowerData powerPhase0) {
-    this.lastPowerPhase0Update = Instant.now();
-    this.powerPhase0 = powerPhase0.adjustPower(offsetPhase0);
+    Instant now = Instant.now();
+    // Calculate time interval since last measurement in seconds
+    double intervalSeconds = Duration.between(this.lastPowerPhase0Update, now).toMillis() / 1000.0;
+    
+    // Apply offset and time-based smoothing
+    this.powerPhase0 = powerPhase0.adjustPower(
+        offsetPhase0, 
+        lastAdjustedPowerPhase0, 
+        powerAveragingSecondsPhase0Up,
+        powerAveragingSecondsPhase0Down,
+        intervalSeconds
+    );
+    
+    // Update timestamp and store final adjusted power for next smoothing calculation
+    this.lastPowerPhase0Update = now;
+    this.lastAdjustedPowerPhase0 = this.powerPhase0.power();
     logger.debug("power phase 0: {}", this.powerPhase0);
   }
   
@@ -428,8 +457,22 @@ public abstract class OutputDevice extends AbstractBehavior<OutputDevice.Command
   }
   
   protected void setPowerPhase1(@NotNull PowerData powerPhase1) {
-    this.lastPowerPhase1Update = Instant.now();
-    this.powerPhase1 = powerPhase1.adjustPower(offsetPhase1);
+    Instant now = Instant.now();
+    // Calculate time interval since last measurement in seconds
+    double intervalSeconds = Duration.between(this.lastPowerPhase1Update, now).toMillis() / 1000.0;
+    
+    // Apply offset and time-based smoothing
+    this.powerPhase1 = powerPhase1.adjustPower(
+        offsetPhase1, 
+        lastAdjustedPowerPhase1, 
+        powerAveragingSecondsPhase1Up,
+        powerAveragingSecondsPhase1Down,
+        intervalSeconds
+    );
+    
+    // Update timestamp and store final adjusted power for next smoothing calculation
+    this.lastPowerPhase1Update = now;
+    this.lastAdjustedPowerPhase1 = this.powerPhase1.power();
     logger.debug("power phase 1: {}", this.powerPhase1);
   }
   
@@ -450,8 +493,22 @@ public abstract class OutputDevice extends AbstractBehavior<OutputDevice.Command
   }
   
   protected void setPowerPhase2(@NotNull PowerData powerPhase2) {
-    this.lastPowerPhase2Update = Instant.now();
-    this.powerPhase2 = powerPhase2.adjustPower(offsetPhase2);
+    Instant now = Instant.now();
+    // Calculate time interval since last measurement in seconds
+    double intervalSeconds = Duration.between(this.lastPowerPhase2Update, now).toMillis() / 1000.0;
+    
+    // Apply offset and time-based smoothing
+    this.powerPhase2 = powerPhase2.adjustPower(
+        offsetPhase2, 
+        lastAdjustedPowerPhase2, 
+        powerAveragingSecondsPhase2Up,
+        powerAveragingSecondsPhase2Down,
+        intervalSeconds
+    );
+    
+    // Update timestamp and store final adjusted power for next smoothing calculation
+    this.lastPowerPhase2Update = now;
+    this.lastAdjustedPowerPhase2 = this.powerPhase2.power();
     logger.debug("power phase 2: {}", this.powerPhase2);
   }
   
@@ -524,6 +581,14 @@ public abstract class OutputDevice extends AbstractBehavior<OutputDevice.Command
     parameters.put("power-offset-l3", offsetPhase2);
     parameters.put("power-offset-total", offsetPhase0 + offsetPhase1 + offsetPhase2);
     
+    // Add power averaging time parameters (in seconds)
+    parameters.put("power-averaging-seconds-l1-up", powerAveragingSecondsPhase0Up);
+    parameters.put("power-averaging-seconds-l1-down", powerAveragingSecondsPhase0Down);
+    parameters.put("power-averaging-seconds-l2-up", powerAveragingSecondsPhase1Up);
+    parameters.put("power-averaging-seconds-l2-down", powerAveragingSecondsPhase1Down);
+    parameters.put("power-averaging-seconds-l3-up", powerAveragingSecondsPhase2Up);
+    parameters.put("power-averaging-seconds-l3-down", powerAveragingSecondsPhase2Down);
+    
     return parameters;
   }
   
@@ -547,6 +612,29 @@ public abstract class OutputDevice extends AbstractBehavior<OutputDevice.Command
     } else {
       logger.info("using phase power offsets: L1={}, L2={}, L3={}", offsetPhase0, offsetPhase1, offsetPhase2);
     }
+  }
+
+/**
+   * Initialize power averaging time periods from configuration.
+   * 
+   * The averaging time determines the time constant for exponential smoothing:
+   * 0 seconds: No smoothing, Larger values: More smoothing, slower response to changes
+   * Separate times can be configured for power increases (up) and decreases (down),
+   */
+  protected void initPowerAveragingTimes(@NotNull Config config) {
+    // Read phase-specific averaging times as plain numbers (in seconds)
+    powerAveragingSecondsPhase0Up = config.getDouble("power-averaging-seconds-l1-up");
+    powerAveragingSecondsPhase0Down = config.getDouble("power-averaging-seconds-l1-down");
+    powerAveragingSecondsPhase1Up = config.getDouble("power-averaging-seconds-l2-up");
+    powerAveragingSecondsPhase1Down = config.getDouble("power-averaging-seconds-l2-down");
+    powerAveragingSecondsPhase2Up = config.getDouble("power-averaging-seconds-l3-up");
+    powerAveragingSecondsPhase2Down = config.getDouble("power-averaging-seconds-l3-down");
+    logger.info("power averaging times L1: up={}s, down={}s", 
+                powerAveragingSecondsPhase0Up, powerAveragingSecondsPhase0Down);
+    logger.info("power averaging times L2: up={}s, down={}s", 
+                powerAveragingSecondsPhase1Up, powerAveragingSecondsPhase1Down);
+    logger.info("power averaging times L3: up={}s, down={}s", 
+                powerAveragingSecondsPhase2Up, powerAveragingSecondsPhase2Down);
   }
 
   /**
@@ -591,7 +679,13 @@ public abstract class OutputDevice extends AbstractBehavior<OutputDevice.Command
       case "power-offset-l1",
            "power-offset-l2",
            "power-offset-l3",
-           "power-offset-total" -> checkDoubleParameter(key, value);
+           "power-offset-total",
+           "power-averaging-seconds-l1-up",
+           "power-averaging-seconds-l1-down",
+           "power-averaging-seconds-l2-up",
+           "power-averaging-seconds-l2-down",
+           "power-averaging-seconds-l3-up",
+           "power-averaging-seconds-l3-down" -> checkDoubleParameter(key, value);
       default -> throw new BadRequestException("unknown parameter '" + key + "'");
     };
   }
@@ -657,6 +751,12 @@ public abstract class OutputDevice extends AbstractBehavior<OutputDevice.Command
         offsetPhase1 = (double) parameterValue.value() / 3.0;
         offsetPhase2 = (double) parameterValue.value() / 3.0;
       }
+      case "power-averaging-seconds-l1-up" -> powerAveragingSecondsPhase0Up = (double) parameterValue.value();
+      case "power-averaging-seconds-l1-down" -> powerAveragingSecondsPhase0Down = (double) parameterValue.value();
+      case "power-averaging-seconds-l2-up" -> powerAveragingSecondsPhase1Up = (double) parameterValue.value();
+      case "power-averaging-seconds-l2-down" -> powerAveragingSecondsPhase1Down = (double) parameterValue.value();
+      case "power-averaging-seconds-l3-up" -> powerAveragingSecondsPhase2Up = (double) parameterValue.value();
+      case "power-averaging-seconds-l3-down" -> powerAveragingSecondsPhase2Down = (double) parameterValue.value();
       default -> throw new BadRequestException("unknown parameter '" + parameterValue.parameter() + "'");
     }
     logger.info("changing {} to {}", parameterValue.parameter(), parameterValue.value());
@@ -790,15 +890,71 @@ public abstract class OutputDevice extends AbstractBehavior<OutputDevice.Command
         double voltage,
         double frequency
   ) {
-    public PowerData adjustPower(double offset) {
-      if (offset == 0) {
-        return this;
+    /**
+     * Adjust power value by applying offset first, then optional time-based exponential smoothing.
+     * 
+     * The adjustment is done in two independent steps:
+     * 1. Apply static offset to raw measurement: powerWithOffset = power + offset
+     * 2. Apply exponential smoothing to the offset-adjusted value
+     * 
+     * The smoothing algorithm provides separate control for power increases and decreases:
+     * - When power INCREASES: Uses averagingSecondsUp for smoothing
+     * - When power DECREASES: Uses averagingSecondsDown for smoothing
+     * 
+     * This allows asymmetric response (e.g., fast drops, slow increases to prevent charging spikes).
+     * 
+     * The weight of the past value is calculated as:
+     *   pastWeight = (averagingSeconds - intervalSeconds) / averagingSeconds
+     *   if intervalSeconds >= averagingSeconds: pastWeight = 0 (no smoothing)
+     * 
+     * Formula: adjustedPower = (1 - pastWeight) * currentWithOffset + pastWeight * lastAdjusted
+     * 
+     * @param offset Static offset to add to power measurement (can be positive or negative)
+     * @param lastAdjustedPower The previous adjusted power value (after offset and smoothing)
+     * @param averagingSecondsUp Time constant in seconds for smoothing power increases
+     * @param averagingSecondsDown Time constant in seconds for smoothing power decreases
+     * @param intervalSeconds Time elapsed since last measurement in seconds
+     * @return New PowerData with adjusted power and recalculated electrical parameters
+     */
+    public PowerData adjustPower(double offset, double lastAdjustedPower, 
+                                 double averagingSecondsUp, double averagingSecondsDown, 
+                                 double intervalSeconds) {
+      // Step 1: Apply static offset to raw measurement
+      double powerWithOffset = power + offset;
+      
+      // Step 2: Determine which averaging time to use based on power direction
+      double averagingSeconds;
+      if (powerWithOffset > lastAdjustedPower) {
+        // Power is increasing: use "up" averaging time
+        averagingSeconds = averagingSecondsUp;
       } else {
-        double adjustedPower = power + offset;
-        double adjustedApparentPower = adjustedPower * powerFactor;
-        double adjustedCurrent = adjustedPower / voltage;
-        return new PowerData(adjustedPower, adjustedApparentPower, powerFactor, adjustedCurrent, voltage, frequency);
+        // Power is decreasing: use "down" averaging time
+        averagingSeconds = averagingSecondsDown;
       }
+      
+      // Step 3: Calculate time-based smoothing weight and apply smoothing
+      double adjustedPower;
+      if (averagingSeconds > 0 && powerWithOffset != lastAdjustedPower) {
+        // Calculate past weight based on time elapsed
+        double pastWeight;
+        if (intervalSeconds >= averagingSeconds) {
+          // Too much time has passed, no smoothing needed
+          pastWeight = 0.0;
+        } else {
+          // Calculate weight: more time elapsed = less influence of past value
+          pastWeight = (averagingSeconds - intervalSeconds) / averagingSeconds;
+        }
+        adjustedPower = (1.0 - pastWeight) * powerWithOffset + pastWeight * lastAdjustedPower;
+        
+      } else {
+        // No smoothing configured or power unchanged: use value as-is
+        adjustedPower = powerWithOffset;
+      }
+      
+      double adjustedApparentPower = adjustedPower * powerFactor;
+      double adjustedCurrent = adjustedPower / voltage;
+      
+      return new PowerData(adjustedPower, adjustedApparentPower, powerFactor, adjustedCurrent, voltage, frequency);
     }
   }
   

@@ -136,6 +136,20 @@ behavior. That API might, for instance, be used via a cron job using curl or dir
 * **[REST API to prevent charging/discharging](doc/api/DontChargeDischarge.md)**
 * **[REST API to dynamically adjust runtime parameters](doc/api/SetParameters.md)**
 
+## Power Averaging (Exponential Smoothing)
+
+The `uni-meter` supports time-based exponential smoothing of power measurements to dampen rapid fluctuations 
+(e.g., from solar panels under cloudy conditions). This prevents unwanted rapid charging/discharging cycles in 
+battery storage systems.
+
+Smoothing can be configured separately for:
+- Each of the three phases (L1, L2, L3)
+- Power increases ("up") and decreases ("down") independently
+
+This allows asymmetric behavior, such as smoothing power spikes while maintaining fast response to power drops.
+
+For detailed configuration instructions and examples, see **[Power Averaging Configuration](doc/output/Common.md#configuring-power-averaging-exponential-smoothing)**.
+
 ## Troubleshooting
 
 `uni-meter` use the Java logback logging system. In the default setup only info, warning and error messages are written

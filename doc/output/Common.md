@@ -48,6 +48,8 @@ uni-meter {
       power-offset-l1 = 0
       power-offset-l2 = 0
       power-offset-l3 = 0
+
+
     }
   }
 }
@@ -145,8 +147,10 @@ uni-meter {
   #...
   output-devices {
     shelly-pro3em {
-      #...
-      # Smooth power increases over 10 seconds, but react immediately to decreases
+      # ...
+      
+      # Smooth power increases over 10 seconds to prevent controller overshoot
+      # React immediately to lower consumption to limit grid export 
       power-averaging-seconds-l1-up = 10
       power-averaging-seconds-l1-down = 0
       power-averaging-seconds-l2-up = 10
